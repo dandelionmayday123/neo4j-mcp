@@ -35,112 +35,123 @@ class Neo4jClient:
             headers={
                 "Authorization": f"Basic {self.auth_header}",
                 "Content-Type": "application/json; charset=utf-8",
-                "Accept": "application/json"
+                "Accept": "application/json; charset=utf-8"
             },
             verify=False  # 如果需要跳过SSL验证
         )
+        
+        logger.info(f"Neo4j客户端初始化完成，连接到 {config.NEO4J_URI}")
     
     async def close(self):
         """关闭客户端连接"""
         await self.client.aclose()
+        logger.info("Neo4j客户端连接已关闭")
         
     async def execute_query(self, query: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """执行Cypher查询"""
-        data = {
-            "statements": [{
-                "statement": query,
-                "parameters": params or {}
-            }]
-        }
-        
         try:
-            # 记录请求数据
-            logging.debug(f"发送请求到 {self.transaction_endpoint}")
-            json_data = json.dumps(data, ensure_ascii=False)
-            logging.debug(f"请求数据: {json_data}")
+            # 准备请求数据
+            data = {
+                "statements": [{
+                    "statement": query,
+                    "parameters": params or {}
+                }]
+            }
             
+            logger.debug(f"发送请求到 {self.transaction_endpoint}")
+            logger.debug(f"请求数据: {json.dumps(data, ensure_ascii=False)}")
+            
+            # 发送请求
             response = await self.client.post(
                 self.transaction_endpoint,
-                content=json_data.encode('utf-8')
+                json=data
             )
-            response.raise_for_status()
+            
+            # 确保响应使用UTF-8解码
+            response.encoding = 'utf-8'
             
             # 记录原始响应
-            raw_response = response.text
-            logging.debug(f"收到原始响应: {raw_response}")
+            response_text = response.text
+            logger.debug(f"收到原始响应: {response_text}")
             
-            try:
-                # 使用utf-8解码响应内容
-                result = json.loads(raw_response)
-            except json.JSONDecodeError as e:
-                logging.error(f"JSON解析错误: {str(e)}")
-                logging.error(f"原始响应内容: {raw_response}")
-                raise Exception(f"JSON解析失败: {str(e)}")
+            # 解析响应
+            result = response.json()
             
-            # 检查错误
-            if result.get("errors"):
-                error_msg = result["errors"][0]["message"]
-                logging.error(f"Neo4j返回错误: {error_msg}")
-                raise Exception(error_msg)
-                
+            if "errors" in result and result["errors"]:
+                error_msg = result["errors"][0].get("message", "未知错误")
+                logger.error(f"查询错误: {error_msg}")
+                # 如果是类型不匹配错误，尝试使用替代语法
+                if "Type mismatch" in error_msg and "List<String>" in error_msg:
+                    # 修改查询，使用ANY替代CONTAINS
+                    modified_query = query.replace("labels(n) CONTAINS", "ANY(label IN labels(n) WHERE label =")
+                    modified_query = modified_query.replace("RETURN", ") RETURN")
+                    logger.info(f"使用修改后的查询重试: {modified_query}")
+                    return await self.execute_query(modified_query, params)
+                raise Exception(f"Neo4j查询错误: {error_msg}")
+            
             # 处理结果
-            if not result["results"]:
-                return []
-                
-            # 转换结果格式
-            columns = result["results"][0]["columns"]
-            rows = []
-            for row in result["results"][0]["data"]:
-                row_dict = {}
-                for col, val in zip(columns, row["row"]):
-                    row_dict[col] = val
-                rows.append(row_dict)
-                
-            return rows
+            data = result["results"][0].get("data", [])
+            logger.info(f"查询成功，返回 {len(data)} 条结果")
+            return data
             
-        except httpx.HTTPError as e:
-            logging.error(f"HTTP请求错误: {str(e)}")
-            raise Exception(f"HTTP请求错误: {str(e)}")
         except Exception as e:
-            logging.error(f"未预期的错误: {str(e)}")
+            logger.error(f"执行查询时出错: {str(e)}")
             raise
             
     async def create_node(self, label: str, properties: Dict[str, Any]) -> Dict[str, Any]:
         """创建节点"""
-        query = f"""
-        CREATE (n:{label} $props)
-        RETURN n
-        """
-        result = await self.execute_query(query, {"props": properties})
-        return result[0] if result else None
-        
+        query = f"CREATE (n:{label} $props) RETURN n"
+        try:
+            logger.info(f"创建节点 {label}")
+            logger.debug(f"节点属性: {json.dumps(properties, ensure_ascii=False)}")
+            result = await self.execute_query(query, {"props": properties})
+            if result:
+                logger.info("节点创建成功")
+                return {
+                    "row": result[0]["row"][0],
+                    "meta": result[0]["meta"][0]
+                }
+            raise Exception("创建节点失败：没有返回结果")
+        except Exception as e:
+            logger.error(f"创建节点失败: {str(e)}")
+            raise
+            
     async def create_relationship(
-        self,
-        from_node_id: int,
-        to_node_id: int,
+        self, 
+        from_node_id: int, 
+        to_node_id: int, 
         rel_type: str,
         properties: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """创建关系"""
+        query = """
+        MATCH (from), (to)
+        WHERE ID(from) = $from_id AND ID(to) = $to_id
+        CREATE (from)-[r:$rel_type $props]->(to)
+        RETURN r
+        """
         try:
-            logging.info(f"创建关系 {rel_type} 从节点 {from_node_id} 到节点 {to_node_id}")
-            # 如果properties为None，使用空字典
-            props = properties if properties is not None else {}
-            query = f"""
-            MATCH (from) WHERE ID(from) = $from_id
-            MATCH (to) WHERE ID(to) = $to_id
-            CREATE (from)-[r:{rel_type}]->(to)
-            SET r = $props
-            RETURN r
-            """
-            params = {
-                "from_id": from_node_id,
-                "to_id": to_node_id,
-                "props": props
-            }
-            result = await self.execute_query(query, params)
-            logging.info("关系创建成功")
-            return result[0] if result else None
+            logger.info(f"创建关系 {rel_type} 从节点 {from_node_id} 到节点 {to_node_id}")
+            if properties:
+                logger.debug(f"关系属性: {json.dumps(properties, ensure_ascii=False)}")
+            
+            result = await self.execute_query(
+                query,
+                {
+                    "from_id": from_node_id,
+                    "to_id": to_node_id,
+                    "rel_type": rel_type,
+                    "props": properties or {}
+                }
+            )
+            
+            if result:
+                logger.info("关系创建成功")
+                return {
+                    "row": result[0]["row"][0],
+                    "meta": result[0]["meta"][0]
+                }
+            raise Exception("创建关系失败：没有返回结果")
         except Exception as e:
-            logging.error(f"关系创建失败: {str(e)}")
+            logger.error(f"创建关系失败: {str(e)}")
             raise

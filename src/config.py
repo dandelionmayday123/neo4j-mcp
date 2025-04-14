@@ -8,7 +8,7 @@ load_dotenv()
 
 class Config(BaseModel):
     # Neo4j配置
-    NEO4J_URI: str = Field(default_factory=lambda: os.getenv("NEO4J_URI", "http://localhost:7474"))
+    NEO4J_URI: str = Field(default_factory=lambda: os.getenv("NEO4J_URI", "bolt://localhost:7687"))
     NEO4J_USERNAME: str = Field(default_factory=lambda: os.getenv("NEO4J_USERNAME", "neo4j"))
     NEO4J_PASSWORD: str = Field(default_factory=lambda: os.getenv("NEO4J_PASSWORD", "your-password"))
     

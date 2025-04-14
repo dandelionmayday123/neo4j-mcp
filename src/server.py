@@ -1,84 +1,84 @@
 import os
-import sys
 import logging
-from pathlib import Path
-import asyncio
-
-# 添加项目根目录到 Python 路径
-project_root = str(Path(__file__).parent.parent.absolute())
-sys.path.insert(0, project_root)
-
-from mcp.server.fastmcp import FastMCP
-from src.neo4j_client import Neo4jClient
+from .config import config
+from .neo4j_client import Neo4jClient
+from mcp import FastMCP
 from typing import Any, Dict, List, Optional
-from src.config import config
 
-# 配置日志
+# 设置系统编码为UTF-8
+os.environ['PYTHONIOENCODING'] = 'utf-8'
+
+# 配置日志记录
 logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(os.path.join(project_root, 'neo4j_mcp.log'))
-    ]
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-
 logger = logging.getLogger(__name__)
 
 class Neo4jMCPServer(FastMCP):
     def __init__(self):
         super().__init__()
-        self.neo4j_client = Neo4jClient()
-        logging.info(f"初始化Neo4j MCP服务器 - 连接到 {config.NEO4J_URI}")
+        self.client = None
+        logger.info("Neo4j MCP服务器初始化完成")
         
-        # 注册工具
-        self.add_tool(
-            self.execute_query,
-            name="execute_query",
-            description="执行Cypher查询"
-        )
+    async def startup(self):
+        """服务器启动时的初始化操作"""
+        logger.info("正在初始化Neo4j客户端...")
+        self.client = Neo4jClient()
         
-        self.add_tool(
-            self.create_node,
-            name="create_node",
-            description="创建新节点"
-        )
-        
-        self.add_tool(
-            self.create_relationship,
-            name="create_relationship",
-            description="创建关系"
-        )
-    
+    async def shutdown(self):
+        """服务器关闭时的清理操作"""
+        if self.client:
+            logger.info("正在关闭Neo4j客户端...")
+            await self.client.close()
+            
     async def execute_query(self, query: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        """执行Cypher查询"""
+        """执行Cypher查询
+        
+        Args:
+            query: Cypher查询语句
+            params: 查询参数（可选）
+            
+        Returns:
+            查询结果列表
+        """
         try:
-            logging.info(f"执行查询: {query}")
-            # 设置超时时间为30秒
-            result = await asyncio.wait_for(
-                self.neo4j_client.execute_query(query, params),
-                timeout=30.0
-            )
-            logging.info(f"查询成功, 返回 {len(result)} 条结果")
+            logger.info(f"执行查询: {query}")
+            if params:
+                logger.debug(f"查询参数: {params}")
+                
+            result = await self.client.execute_query(query, params)
             return result
-        except asyncio.TimeoutError:
-            logging.error("查询执行超时")
-            raise Exception("查询执行超时，请检查查询语句或增加超时时间")
+            
         except Exception as e:
-            logging.error(f"查询执行失败: {str(e)}")
+            logger.error(f"查询执行失败: {str(e)}")
             raise
-    
-    async def create_node(self, label: str, properties: Dict[str, Any]) -> Dict[str, Any]:
-        """创建新节点"""
+            
+    async def create_node(
+        self,
+        label: str,
+        properties: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """创建节点
+        
+        Args:
+            label: 节点标签
+            properties: 节点属性
+            
+        Returns:
+            创建的节点信息
+        """
         try:
-            logging.info(f"创建节点 {label}: {properties}")
-            result = await self.neo4j_client.create_node(label, properties)
-            logging.info("节点创建成功")
+            logger.info(f"创建节点 {label}")
+            logger.debug(f"节点属性: {properties}")
+            
+            result = await self.client.create_node(label, properties)
             return result
+            
         except Exception as e:
-            logging.error(f"节点创建失败: {str(e)}")
+            logger.error(f"创建节点失败: {str(e)}")
             raise
-    
+            
     async def create_relationship(
         self,
         from_node_id: int,
@@ -86,31 +86,34 @@ class Neo4jMCPServer(FastMCP):
         rel_type: str,
         properties: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """创建关系"""
+        """创建关系
+        
+        Args:
+            from_node_id: 起始节点ID
+            to_node_id: 目标节点ID
+            rel_type: 关系类型
+            properties: 关系属性（可选）
+            
+        Returns:
+            创建的关系信息
+        """
         try:
-            logging.info(f"创建关系 {rel_type} 从节点 {from_node_id} 到节点 {to_node_id}")
-            result = await self.neo4j_client.create_relationship(
+            logger.info(f"创建关系 {rel_type} 从节点 {from_node_id} 到节点 {to_node_id}")
+            if properties:
+                logger.debug(f"关系属性: {properties}")
+                
+            result = await self.client.create_relationship(
                 from_node_id,
                 to_node_id,
                 rel_type,
                 properties
             )
-            logging.info("关系创建成功")
             return result
+            
         except Exception as e:
-            logging.error(f"关系创建失败: {str(e)}")
+            logger.error(f"创建关系失败: {str(e)}")
             raise
-    
-    async def cleanup(self):
-        """清理资源"""
-        logging.info("关闭Neo4j客户端连接")
-        await self.neo4j_client.close()
 
 if __name__ == "__main__":
-    try:
-        server = Neo4jMCPServer()
-        logging.info("启动Neo4j MCP服务器")
-        server.run()
-    except Exception as e:
-        logging.error(f"服务器启动失败: {str(e)}")
-        sys.exit(1)
+    server = Neo4jMCPServer()
+    server.run()

@@ -1,13 +1,22 @@
 [project]
 name = "neo4j-mcp"
 version = "0.1.0"
-description = "Neo4j MCP Server"
-readme = "README.md"
-requires-python = ">=3.12"
+description = "Neo4j MCP Server - A microservice for Neo4j database operations"
+requires-python = ">=3.8"
 dependencies = [
-    "httpx>=0.28.1",
-    "mcp[cli]>=1.6.0",
+    "httpx>=0.24.1",
+    "mcp[cli]>=0.1.0",
     "neo4j>=5.0.0",
     "python-dotenv>=1.0.0",
-    "pydantic>=2.0.0",
+    "pydantic>=2.0.0"
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0"
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
